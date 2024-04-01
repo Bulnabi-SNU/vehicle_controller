@@ -7,7 +7,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 # import px4_msgs
-from px4_msgs.msg import VehicleStatus, VehicleCommand
+from px4_msgs.msg import VehicleStatus, VehicleCommand, OffboardControlMode
 
 class VehicleController(Node):
     
@@ -28,15 +28,13 @@ class VehicleController(Node):
 
         ## vehicle states
         self.states = {
-            "IDLE" : 0, "ARMING" : 1, "TAKEOFF" : 2, "LOITER" : 3, "OFFBOARD" : 4,
-            "POSITION" : 5, "RETURN" : 6, "KILLED" : -1
+            "IDLE" : 0, "TAKEOFF" : 1, "HOLD" : 2, "OFFBOARD" : 5,
+            "KILLED" : -1, "UNDEFINED" : 100
         }
+        self.state = self.states["IDLE"]
         self.kill = False
         self.takeoff = False
-        self.state = self.states["IDLE"]
-
-        ## time step counter for takeoff after arming
-        self.counter = 0
+        self.OffboardMessageSending = False
 
         # 3. Create Subscribers
         self.vehicle_status_subscriber = self.create_subscription(
@@ -49,6 +47,11 @@ class VehicleController(Node):
         )
         self.timer = self.create_timer(0.5, self.timer_callback)
 
+        self.offboard_control_mode_publisher = self.create_publisher(
+            OffboardControlMode, '/fmu/in/offboard_control_mode', qos_profile
+        )
+        self.offboard_timer = self.create_timer(0.1, self.offboard_timer_callback)
+
     def vehicle_status_callback(self, msg):
         """Callback function for vehicle_status topic subscriber."""
         if msg.arming_state == VehicleStatus.ARMING_STATE_DISARMED:
@@ -59,32 +62,44 @@ class VehicleController(Node):
                 self.state = self.states["IDLE"]
         else:
             """armed"""
-            if not self.takeoff:    # Before take-off
-                self.state = self.states["ARMING"]
-            elif msg.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF:
+            if msg.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF:
                 self.state = self.states["TAKEOFF"]
             elif msg.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER:
-                self.state = self.states["LOITER"]
+                self.state = self.states["HOLD"]
             elif msg.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
                 self.state = self.states["OFFBOARD"]
-            elif msg.nav_state == VehicleStatus.NAVIGATION_STATE_POSCTL:
-                self.state = self.states["POSITION"]
-            elif msg.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_RTL:
-                self.state = self.states["RETURN"]
+            else:
+                self.state = self.states["UNDEFINED"]
 
         self.get_logger().info(f"state : {self.state}")
 
     def timer_callback(self):
         """Callback function for the timer."""
-        if self.state == self.states["IDLE"]:
+        if self.state == self.states["IDLE"] and not self.takeoff:
+            self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF)
             self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
-        elif self.state == self.states["ARMING"]:
-            self.counter += 1
-            if self.counter >= 10:
-                self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF)
-                self.takeoff = True
+            self.takeoff = True
+
         elif self.state == self.states["TAKEOFF"]:
+            self.OffboardMessageSending = True
+
+        elif self.state == self.states["HOLD"]:
+            self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0)
+
+        elif self.state == self.states["OFFBOARD"]:
             pass
+    
+    def offboard_timer_callback(self):
+        """Callback function for the offboard timer."""
+        if self.OffboardMessageSending:
+            msg = OffboardControlMode()
+            msg.position = True
+            msg.velocity = False
+            msg.acceleration = False
+            msg.attitude = False
+            msg.body_rate = False
+            msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+            self.offboard_control_mode_publisher.publish(msg)
     
     def publish_vehicle_command(self, command, **kwargs):
         """Publish a vehicle command.""" 
