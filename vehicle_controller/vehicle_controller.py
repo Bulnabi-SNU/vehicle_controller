@@ -7,14 +7,27 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 # import px4_msgs
-from px4_msgs.msg import VehicleStatus, VehicleCommand, OffboardControlMode
+"""msgs for subscription"""
+from px4_msgs.msg import VehicleStatus
+from px4_msgs.msg import VehicleLocalPosition
+from px4_msgs.msg import VtolVehicleStatus
+"""msgs for publishing"""
+from px4_msgs.msg import VehicleCommand
+from px4_msgs.msg import OffboardControlMode
+from px4_msgs.msg import TrajectorySetpoint
+
+# import math, numpy
+import math
+import numpy as np
 
 class VehicleController(Node):
     
     def __init__(self):
         super().__init__('vehicle_controller')
 
-        # 0. Configure QoS profile for publishing and subscribing
+        """
+        0. Configure QoS profile for publishing and subscribing
+        """
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -22,85 +35,182 @@ class VehicleController(Node):
             depth=1
         )
 
-        # 1. Constants
+        """
+        1. Constants
+        """
+        self.WP1 = np.array([0.0, 0.0, -40.0])
+        self.WP2 = np.array([800.0, 800.0, -40.0])
+        self.acceptance_radius = 0.3
+        self.acceptance_heading_angle = np.radians(0.5)
 
-        # 2. Variables
-
-        ## vehicle states
-        self.states = {
-            "IDLE" : 0, "TAKEOFF" : 1, "HOLD" : 2, "OFFBOARD" : 5,
-            "KILLED" : -1, "UNDEFINED" : 100
-        }
-        self.state = self.states["IDLE"]
+        """
+        2. State variables
+        """
+        # phase description
+        # -1 : before flight
+        # 0 : takeoff and arm
+        # i >= 1 : moving toward WP_i
+        self.phase = -1
         self.kill = False
-        self.takeoff = False
-        self.OffboardMessageSending = False
 
-        # 3. Create Subscribers
+        self.vehicle_status = VehicleStatus()
+        self.vtol_vehicle_status = VtolVehicleStatus()
+        self.vehicle_local_position = VehicleLocalPosition()
+        self.pos = np.array([0.0, 0.0, 0.0])
+        self.yaw = float('nan')
+
+        self.current_goal = None
+        self.mission_yaw = float('nan')
+
+        self.transition_count = 0
+
+        """
+        3. Create Subscribers
+        """
         self.vehicle_status_subscriber = self.create_subscription(
             VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_profile
         )
+        self.vehicle_local_position_subscriber = self.create_subscription(
+            VehicleLocalPosition, '/fmu/out/vehicle_local_position', self.vehicle_local_position_callback, qos_profile
+        )
+        self.vtol_vehicle_status_subscriber = self.create_subscription(
+            VtolVehicleStatus, '/fmu/out/vtol_vehicle_status', self.vtol_vehicle_status_callback, qos_profile
+        )
 
-        # 4. Create Publishers
+        """
+        4. Create Publishers
+        """
         self.vehicle_command_publisher = self.create_publisher(
             VehicleCommand, '/fmu/in/vehicle_command', qos_profile
         )
-        self.timer = self.create_timer(0.5, self.timer_callback)
-
         self.offboard_control_mode_publisher = self.create_publisher(
             OffboardControlMode, '/fmu/in/offboard_control_mode', qos_profile
         )
-        self.offboard_timer = self.create_timer(0.1, self.offboard_timer_callback)
+        self.trajectory_setpoint_publisher = self.create_publisher(
+            TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile
+        )
 
+        """
+        5. timer setup
+        """
+        self.offboard_heartbeat = self.create_timer(0.1, self.offboard_heartbeat_callback)
+        self.main_timer = self.create_timer(0.5, self.main_timer_callback)
+
+        """
+        6. takeoff and arm, flight starts!
+        """
+        self.takeoff_and_arm()
+
+    """
+    Services
+    """
+    def takeoff_and_arm(self):
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF)
+        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
+        self.phase = 0
+
+    def get_bearing_to_next_waypoint(self, now, next):
+        now2d = now[0:2]
+        next2d = next[0:2]
+
+        n = np.array([1, 0]) # North dircetion vector
+        u = (next2d - now2d) / np.linalg.norm(next2d - now2d)
+
+        yaw = np.arctan2( np.linalg.det([n, u]), np.dot(n, u) )
+        self.publish_trajectory_setpoint(now, yaw)  # fix the position.
+
+        return yaw
+
+    """
+    Callback functions for the timers
+    """
+    def offboard_heartbeat_callback(self):
+        """offboard heartbeat signal"""
+        msg = OffboardControlMode()
+        msg.position = True
+        msg.velocity = False
+        msg.acceleration = False
+        msg.attitude = False
+        msg.body_rate = False
+        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        self.offboard_control_mode_publisher.publish(msg)
+    
+    def main_timer_callback(self):
+        """Callback function for the timer."""
+        if self.phase == 0:
+            if self.vehicle_status.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER:
+                """change to offboard mode, and advance to phase 0.5"""
+                self.publish_vehicle_command(
+                    VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 
+                    param1=1.0, # main mode
+                    param2=6.0  # offboard
+                )
+                self.phase = 0.5
+        elif self.phase == 0.5:
+            """set goal to WP1, advance to phase 1"""
+            self.current_goal = self.WP1
+            self.publish_trajectory_setpoint(self.current_goal)
+            self.phase = 1
+        elif self.phase == 1:
+            if np.linalg.norm(self.pos - self.current_goal) < self.acceptance_radius:
+                """WP1 arrived; Heading to WP2, and advance to phase 1.5"""
+                self.mission_yaw = self.get_bearing_to_next_waypoint(self.pos, self.WP2)
+                self.phase = "heading"
+        elif self.phase == "heading":
+            if math.fabs(self.yaw - self.mission_yaw) < self.acceptance_heading_angle:
+                """Heading complete; change to position ctrl mode, transition start"""
+                self.publish_vehicle_command(
+                    VehicleCommand.VEHICLE_CMD_DO_SET_MODE,
+                    param1=1.0, # main mode
+                    param2=3.0  # position ctl
+                )
+                self.publish_vehicle_command(
+                    VehicleCommand.VEHICLE_CMD_DO_VTOL_TRANSITION, 
+                    param1=float(VtolVehicleStatus.VEHICLE_VTOL_STATE_FW), 
+                    param2=0.0  # normal transition
+                )
+                self.phase = "transition"
+        elif self.phase == "transition":
+            if self.vtol_vehicle_status.vehicle_vtol_state == VtolVehicleStatus.VEHICLE_VTOL_STATE_FW:
+                """transition complete; change to offboard ctrl mode, advance to phase 1.5"""
+                if self.transition_count == 10:
+                    self.publish_vehicle_command(
+                        VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 
+                        param1=1.0, # main mode
+                        param2=6.0  # offboard
+                    )
+                    self.phase = 1.5
+                self.transition_count += 1
+        elif self.phase == 1.5:
+            """set goal to WP2, advance to phase 2"""
+            self.current_goal = self.WP2
+            self.publish_trajectory_setpoint(self.current_goal)
+            self.phase = 2
+        elif self.phase == 2:
+            self.publish_trajectory_setpoint(self.current_goal)
+            if np.linalg.norm(self.pos - self.current_goal) < self.acceptance_radius:
+                print("Mission Complete! Yeah!")
+
+        print(self.phase)          
+    
+    """
+    Callback functions for subscribers.
+    """        
     def vehicle_status_callback(self, msg):
         """Callback function for vehicle_status topic subscriber."""
-        if msg.arming_state == VehicleStatus.ARMING_STATE_DISARMED:
-            """disarmed"""
-            if self.kill:
-                self.state = self.states["KILLED"]
-            else:
-                self.state = self.states["IDLE"]
-        else:
-            """armed"""
-            if msg.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF:
-                self.state = self.states["TAKEOFF"]
-            elif msg.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER:
-                self.state = self.states["HOLD"]
-            elif msg.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
-                self.state = self.states["OFFBOARD"]
-            else:
-                self.state = self.states["UNDEFINED"]
-
-        self.get_logger().info(f"state : {self.state}")
-
-    def timer_callback(self):
-        """Callback function for the timer."""
-        if self.state == self.states["IDLE"] and not self.takeoff:
-            self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF)
-            self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
-            self.takeoff = True
-
-        elif self.state == self.states["TAKEOFF"]:
-            self.OffboardMessageSending = True
-
-        elif self.state == self.states["HOLD"]:
-            self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, param1=1.0, param2=6.0)
-
-        elif self.state == self.states["OFFBOARD"]:
-            pass
+        self.vehicle_status = msg
     
-    def offboard_timer_callback(self):
-        """Callback function for the offboard timer."""
-        if self.OffboardMessageSending:
-            msg = OffboardControlMode()
-            msg.position = True
-            msg.velocity = False
-            msg.acceleration = False
-            msg.attitude = False
-            msg.body_rate = False
-            msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-            self.offboard_control_mode_publisher.publish(msg)
-    
+    def vehicle_local_position_callback(self, msg):
+        self.vehicle_local_position = msg
+        self.pos = np.array([msg.x, msg.y, msg.z])
+        self.yaw = msg.heading
+
+    def vtol_vehicle_status_callback(self, msg):
+        self.vtol_vehicle_status = msg
+
+    """
+    Functions for publishing topics.
+    """
     def publish_vehicle_command(self, command, **kwargs):
         """Publish a vehicle command.""" 
         msg = VehicleCommand()
@@ -119,6 +229,14 @@ class VehicleController(Node):
         msg.from_external = True
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.vehicle_command_publisher.publish(msg)
+    
+    def publish_trajectory_setpoint(self, setpoint, setyaw=float('nan')):
+        msg = TrajectorySetpoint()
+        msg.position = list(setpoint)
+        msg.yaw = setyaw
+        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        self.trajectory_setpoint_publisher.publish(msg)
+        # self.get_logger().info(f"Publishing position setpoints {setpoint}")
 
 def main(args = None):
     rclpy.init(args = args)
