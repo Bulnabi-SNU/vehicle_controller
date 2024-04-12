@@ -40,8 +40,8 @@ class VehicleController(Node):
         """
         self.WP1 = np.array([0.0, 0.0, -20.0])
         self.WP2 = np.array([500.0, 0.0, -20.0])
-        self.WP3 = np.array([1000.0, 30.0, -20.0])
-        self.WP4 = np.array([1500.0, 90.0, -20.0])
+        self.WP3 = np.array([1000.0, 300.0, -20.0])
+        self.WP4 = np.array([1500.0, 900.0, -20.0])
         self.fw_speed = 15.0
         self.mc_acceptance_radius = 0.3
         self.fw_acceptance_radius = 10.0
@@ -63,6 +63,7 @@ class VehicleController(Node):
         self.pos = np.array([0.0, 0.0, 0.0])
         self.yaw = float('nan')
 
+        self.previous_goal = None
         self.current_goal = None
         self.next_goal = self.WP1
         self.mission_yaw = float('nan')
@@ -160,6 +161,7 @@ class VehicleController(Node):
         elif self.phase == 1:
             if np.linalg.norm(self.pos - self.current_goal) < self.mc_acceptance_radius:
                 """WP1 arrived; set goal to WP2, Heading to WP2, and advance to phase heading"""
+                self.previous_goal = self.current_goal
                 self.current_goal = self.next_goal
                 self.next_goal = self.WP3
                 self.mission_yaw = self.get_bearing_to_next_waypoint(self.pos, self.current_goal)
@@ -181,7 +183,7 @@ class VehicleController(Node):
         elif self.phase == "transition":
             if self.vtol_vehicle_status.vehicle_vtol_state == VtolVehicleStatus.VEHICLE_VTOL_STATE_FW:
                 """transition complete; change to offboard mode, publish setpoint, advance to phase 2"""
-                if self.transition_count == 20:
+                if self.transition_count == 4:
                     self.publish_vehicle_command(
                         VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 
                         param1=1.0, # main mode
@@ -189,17 +191,18 @@ class VehicleController(Node):
                     )
                     self.publish_trajectory_setpoint(
                         position_sp = self.current_goal,
-                        velocity_sp = self.fw_speed * (self.next_goal - self.current_goal) / np.linalg.norm(self.next_goal - self.current_goal)
+                        velocity_sp = self.fw_speed * (self.current_goal - self.previous_goal) / np.linalg.norm(self.current_goal - self.previous_goal)
                     )
                     self.phase = 2
                 self.transition_count += 1
         elif self.phase == 2:
             if np.linalg.norm(self.pos[0:2] - self.current_goal[0:2]) < self.fw_acceptance_radius:
+                self.previous_goal = self.current_goal
                 self.current_goal = self.next_goal
                 self.next_goal = self.WP4
                 self.publish_trajectory_setpoint(
                     position_sp = self.current_goal,
-                    velocity_sp = self.fw_speed * (self.next_goal - self.current_goal) / np.linalg.norm(self.next_goal - self.current_goal)
+                    velocity_sp = self.fw_speed * (self.current_goal - self.previous_goal) / np.linalg.norm(self.current_goal - self.previous_goal)
                 )
                 self.phase = 3
                 print("Mission Complete! Yeah!")
