@@ -38,9 +38,13 @@ class VehicleController(Node):
         """
         1. Constants
         """
-        self.WP1 = np.array([0.0, 0.0, -40.0])
-        self.WP2 = np.array([800.0, 800.0, -40.0])
-        self.acceptance_radius = 0.3
+        self.WP1 = np.array([0.0, 0.0, -20.0])
+        self.WP2 = np.array([500.0, 0.0, -20.0])
+        self.WP3 = np.array([1000.0, 30.0, -20.0])
+        self.WP4 = np.array([1500.0, 90.0, -20.0])
+        self.fw_speed = 15.0
+        self.mc_acceptance_radius = 0.3
+        self.fw_acceptance_radius = 10.0
         self.acceptance_heading_angle = np.radians(0.5)
 
         """
@@ -60,6 +64,7 @@ class VehicleController(Node):
         self.yaw = float('nan')
 
         self.current_goal = None
+        self.next_goal = self.WP1
         self.mission_yaw = float('nan')
 
         self.transition_count = 0
@@ -117,7 +122,7 @@ class VehicleController(Node):
         u = (next2d - now2d) / np.linalg.norm(next2d - now2d)
 
         yaw = np.arctan2( np.linalg.det([n, u]), np.dot(n, u) )
-        self.publish_trajectory_setpoint(now, yaw)  # fix the position.
+        self.publish_trajectory_setpoint(position_sp = now, yaw_sp = yaw)  # fix the position.
 
         return yaw
 
@@ -148,13 +153,16 @@ class VehicleController(Node):
                 self.phase = 0.5
         elif self.phase == 0.5:
             """set goal to WP1, advance to phase 1"""
-            self.current_goal = self.WP1
-            self.publish_trajectory_setpoint(self.current_goal)
+            self.current_goal = self.next_goal
+            self.next_goal = self.WP2
+            self.publish_trajectory_setpoint(position_sp = self.current_goal)
             self.phase = 1
         elif self.phase == 1:
-            if np.linalg.norm(self.pos - self.current_goal) < self.acceptance_radius:
-                """WP1 arrived; Heading to WP2, and advance to phase 1.5"""
-                self.mission_yaw = self.get_bearing_to_next_waypoint(self.pos, self.WP2)
+            if np.linalg.norm(self.pos - self.current_goal) < self.mc_acceptance_radius:
+                """WP1 arrived; set goal to WP2, Heading to WP2, and advance to phase heading"""
+                self.current_goal = self.next_goal
+                self.next_goal = self.WP3
+                self.mission_yaw = self.get_bearing_to_next_waypoint(self.pos, self.current_goal)
                 self.phase = "heading"
         elif self.phase == "heading":
             if math.fabs(self.yaw - self.mission_yaw) < self.acceptance_heading_angle:
@@ -172,23 +180,28 @@ class VehicleController(Node):
                 self.phase = "transition"
         elif self.phase == "transition":
             if self.vtol_vehicle_status.vehicle_vtol_state == VtolVehicleStatus.VEHICLE_VTOL_STATE_FW:
-                """transition complete; change to offboard ctrl mode, advance to phase 1.5"""
-                if self.transition_count == 10:
+                """transition complete; change to offboard mode, publish setpoint, advance to phase 2"""
+                if self.transition_count == 20:
                     self.publish_vehicle_command(
                         VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 
                         param1=1.0, # main mode
                         param2=6.0  # offboard
                     )
-                    self.phase = 1.5
+                    self.publish_trajectory_setpoint(
+                        position_sp = self.current_goal,
+                        velocity_sp = self.fw_speed * (self.next_goal - self.current_goal) / np.linalg.norm(self.next_goal - self.current_goal)
+                    )
+                    self.phase = 2
                 self.transition_count += 1
-        elif self.phase == 1.5:
-            """set goal to WP2, advance to phase 2"""
-            self.current_goal = self.WP2
-            self.publish_trajectory_setpoint(self.current_goal)
-            self.phase = 2
         elif self.phase == 2:
-            self.publish_trajectory_setpoint(self.current_goal)
-            if np.linalg.norm(self.pos - self.current_goal) < self.acceptance_radius:
+            if np.linalg.norm(self.pos[0:2] - self.current_goal[0:2]) < self.fw_acceptance_radius:
+                self.current_goal = self.next_goal
+                self.next_goal = self.WP4
+                self.publish_trajectory_setpoint(
+                    position_sp = self.current_goal,
+                    velocity_sp = self.fw_speed * (self.next_goal - self.current_goal) / np.linalg.norm(self.next_goal - self.current_goal)
+                )
+                self.phase = 3
                 print("Mission Complete! Yeah!")
 
         print(self.phase)          
@@ -230,13 +243,14 @@ class VehicleController(Node):
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.vehicle_command_publisher.publish(msg)
     
-    def publish_trajectory_setpoint(self, setpoint, setyaw=float('nan')):
+    def publish_trajectory_setpoint(self, **kwargs):
         msg = TrajectorySetpoint()
-        msg.position = list(setpoint)
-        msg.yaw = setyaw
+        msg.position = list( kwargs.get("position_sp", np.nan * np.zeros(3)) )
+        msg.velocity = list( kwargs.get("velocity_sp", np.nan * np.zeros(3)) )
+        msg.yaw = kwargs.get("yaw_sp", float('nan'))
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.trajectory_setpoint_publisher.publish(msg)
-        # self.get_logger().info(f"Publishing position setpoints {setpoint}")
+        # self.get_logger().info(f"Publishing position setpoints {setposition}")
 
 def main(args = None):
     rclpy.init(args = args)
