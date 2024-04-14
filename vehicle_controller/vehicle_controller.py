@@ -131,14 +131,12 @@ class VehicleController(Node):
     """
     def offboard_heartbeat_callback(self):
         """offboard heartbeat signal"""
-        msg = OffboardControlMode()
-        msg.position = True
-        msg.velocity = False
-        msg.acceleration = False
-        msg.attitude = False
-        msg.body_rate = False
-        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-        self.offboard_control_mode_publisher.publish(msg)
+        if self.vtol_vehicle_status.vehicle_vtol_state == VtolVehicleStatus.VEHICLE_VTOL_STATE_MC:
+            self.publish_offboard_control_mode(position = True)
+        elif self.vtol_vehicle_status.vehicle_vtol_state == VtolVehicleStatus.VEHICLE_VTOL_STATE_FW:
+            self.publish_offboard_control_mode(position = True, velocity = True)
+        else: # transition
+            self.publish_offboard_control_mode()
     
     def main_timer_callback(self):
         """Callback function for the timer."""
@@ -234,7 +232,7 @@ class VehicleController(Node):
     Functions for publishing topics.
     """
     def publish_vehicle_command(self, command, **kwargs):
-        """Publish a vehicle command.""" 
+        """Publish a vehicle command."""
         msg = VehicleCommand()
         msg.command = command
         msg.param1 = kwargs.get("param1", float('nan'))
@@ -251,6 +249,18 @@ class VehicleController(Node):
         msg.from_external = True
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.vehicle_command_publisher.publish(msg)
+    
+    def publish_offboard_control_mode(self, **kwargs):
+        msg = OffboardControlMode()
+        msg.position = kwargs.get("position", False)
+        msg.velocity = kwargs.get("velocity", False)
+        msg.acceleration = kwargs.get("acceleration", False)
+        msg.attitude = kwargs.get("attitude", False)
+        msg.body_rate = kwargs.get("body_rate", False)
+        msg.thrust_and_torque = kwargs.get("thrust_and_torque", False)
+        msg.direct_actuator = kwargs.get("direct_actuator", False)
+        msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+        self.offboard_control_mode_publisher.publish(msg)
     
     def publish_trajectory_setpoint(self, **kwargs):
         msg = TrajectorySetpoint()
