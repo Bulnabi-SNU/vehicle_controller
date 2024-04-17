@@ -136,7 +136,7 @@ class VehicleController(Node):
         elif self.vtol_vehicle_status.vehicle_vtol_state == VtolVehicleStatus.VEHICLE_VTOL_STATE_FW:
             self.publish_offboard_control_mode(position = True, velocity = True)
         else: # transition
-            self.publish_offboard_control_mode()
+            self.publish_offboard_control_mode(position = True, velocity = True)
     
     def main_timer_callback(self):
         """Callback function for the timer."""
