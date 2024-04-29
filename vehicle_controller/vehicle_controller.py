@@ -40,8 +40,8 @@ class VehicleController(Node):
         """
         self.WP1 = np.array([0.0, 0.0, -20.0])
         self.WP2 = np.array([500.0, 0.0, -20.0])
-        self.WP3 = np.array([1000.0, 300.0, -20.0])
-        self.WP4 = np.array([1500.0, 900.0, -20.0])
+        self.WP3 = np.array([1000.0, 300.0, -5.0])
+        self.WP4 = np.array([1500.0, 900.0, -40.0])
         self.fw_speed = 15.0
         self.mc_acceptance_radius = 0.3
         self.fw_acceptance_radius = 10.0
@@ -178,7 +178,7 @@ class VehicleController(Node):
         elif self.phase == "transition":
             if self.vtol_vehicle_status.vehicle_vtol_state == VtolVehicleStatus.VEHICLE_VTOL_STATE_FW:
                 """transition complete; change to offboard mode, publish setpoint, advance to phase 2"""
-                if self.transition_count == 4:
+                if self.transition_count == 10:
                     self.publish_vehicle_command(
                         VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 
                         param1=1.0, # main mode
@@ -277,7 +277,7 @@ def main(args = None):
     vehicle_controller = VehicleController()
     rclpy.spin(vehicle_controller)
 
-    offboard_control.destroy_node()
+    vehicle_controller.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':
