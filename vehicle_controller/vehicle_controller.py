@@ -51,8 +51,8 @@ class VehicleController(Node):
         """
         self.WP = [np.array([0.0, 0.0, 0.0])]
 
-        current_file_directory = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(current_file_directory, waypoint_filename)
+        current_file_directory = os.path.dirname(os.getcwd())
+        file_path = os.path.join(current_file_directory, "ws_vehicle_controller/src/vehicle_controller/vehicle_controller", waypoint_filename)
 
         try:
             with open(file_path, 'r') as f:
