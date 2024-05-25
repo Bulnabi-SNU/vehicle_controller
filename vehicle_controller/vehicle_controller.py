@@ -20,12 +20,9 @@ from px4_msgs.msg import TrajectorySetpoint
 import math
 import numpy as np
 
-import os
-import argparse
-
 class VehicleController(Node):
     
-    def __init__(self, waypoint_filename):
+    def __init__(self):
         super().__init__('vehicle_controller')
 
         """
@@ -50,19 +47,21 @@ class VehicleController(Node):
         2. Set waypoints
         """
         self.WP = [np.array([0.0, 0.0, 0.0])]
-
-        current_file_directory = os.path.dirname(os.getcwd())
-        file_path = os.path.join(current_file_directory, "ws_vehicle_controller/src/vehicle_controller/vehicle_controller", waypoint_filename)
-
-        try:
-            with open(file_path, 'r') as f:
-                num_waypoints = int(f.readline().strip())
-                for i in range(num_waypoints):
-                    line = f.readline()
-                    x, y, z = map(float, line.split(','))
-                    self.WP.append(np.array([x, y, z]))
-        except FileNotFoundError:
-            print(f"File not found: {waypoint_filename}")
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('WP1', None),
+                ('WP2', None),
+                ('WP3', None),
+                ('WP4', None),
+                ('WP5', None),
+                ('WP6', None),
+                ('WP7', None),
+            ])
+        
+        for i in range(1, 8):
+            wp_position = self.get_parameter(f'WP{i}').value
+            self.WP.append(np.array(wp_position))
 
         """
         3. State variables
@@ -464,14 +463,9 @@ class VehicleController(Node):
         # self.get_logger().info(f"Publishing position setpoints {setposition}")
 
 def main(args = None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--filename', type=str, default='waypoint.txt', help='name of waypoint text file')
-    args = parser.parse_args()
-    waypoint_filename = args.filename
-    
-    rclpy.init()
+    rclpy.init(args=args)
 
-    vehicle_controller = VehicleController(waypoint_filename)
+    vehicle_controller = VehicleController()
     rclpy.spin(vehicle_controller)
 
     vehicle_controller.destroy_node()
