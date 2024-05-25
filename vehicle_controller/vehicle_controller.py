@@ -86,6 +86,7 @@ class VehicleController(Node):
 
         # counter
         self.transition_count = 0
+        self.back_transition_count = 0
         self.pturn_count = 0
 
         # pturn parameters
@@ -370,7 +371,7 @@ class VehicleController(Node):
                     position_sp = self.current_goal,
                     velocity_sp = self.fw_speed * (self.current_goal - self.previous_goal) / np.linalg.norm(self.current_goal - self.previous_goal)
                 )
-                self.phase = 7
+                self.phase = "transition_backward"
             elif np.linalg.norm(self.pos[0:2] - self.current_goal[0:2]) < self.fw_acceptance_radius:
                 self.pturn_count += 1
                 self.previous_goal = self.current_goal
@@ -379,7 +380,28 @@ class VehicleController(Node):
                     position_sp = self.pturn_pos_trajectory[self.pturn_count],
                     velocity_sp = self.pturn_vel_trajectory[self.pturn_count]
                 )
-        
+        elif self.phase == "transition_backward":
+            if self.back_transition_count == 5:                    
+                self.publish_vehicle_command(
+                    VehicleCommand.VEHICLE_CMD_DO_VTOL_TRANSITION, 
+                    param1=float(VtolVehicleStatus.VEHICLE_VTOL_STATE_MC), 
+                    param2=0.0  # normal transition
+                )    
+            self.back_transition_count += 1
+            if self.vtol_vehicle_status.vehicle_vtol_state == VtolVehicleStatus.VEHICLE_VTOL_STATE_MC:
+                """transition complete"""
+                self.publish_trajectory_setpoint(position_sp = self.current_goal)
+                self.phase = 7
+        elif self.phase == 7:
+            if np.linalg.norm(self.pos[0:2] - self.current_goal[0:2]) < self.mc_acceptance_radius:
+                self.previous_goal = self.current_goal
+                self.current_goal = self.WP[1]
+                self.mission_yaw = self.get_bearing_to_next_waypoint(self.pos, self.current_goal)
+                self.phase = "heading 7 to 8"
+        elif self.phase == "heading 7 to 8":
+            if math.fabs(self.yaw - self.mission_yaw) < self.acceptance_heading_angle:
+                self.publish_trajectory_setpoint(position_sp = self.current_goal)
+                self.phase = 8
         print(self.phase)
     
     """
