@@ -455,8 +455,8 @@ class VehicleController(Node):
     
     def publish_trajectory_setpoint(self, **kwargs):
         msg = TrajectorySetpoint()
-        msg.position = list( kwargs.get("position_sp", np.nan * np.zeros(3)) )
-        msg.velocity = list( kwargs.get("velocity_sp", np.nan * np.zeros(3)) )
+        msg.position = list( kwargs.get("position_sp", 3 * [np.nan]) )
+        msg.velocity = list( kwargs.get("velocity_sp", 3 * [np.nan]) )
         msg.yaw = kwargs.get("yaw_sp", float('nan'))
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         self.trajectory_setpoint_publisher.publish(msg)
